@@ -9,14 +9,20 @@ configfile: "config.yaml"
 
 shogun_db_directories, shogun_db_files = glob_wildcards("data/references/{database}/{file}", database=config['database'])
 
+uds_runs, sample_names = glob_wildcards("data/hiseq4000/{uds_run}/{sample_name}.fastq.gz")
+
 rule all:
     input:
-        expand("figs/fig{f}.pdf", f=[1,])
+        expand("figs/fig{f}.pdf", f=[1,]),
+        expand("results/uds/{uds_run}.{sample_name}.txt", uds_run=uds_runs)
 
 ############# Analysis ##############
+
 rule extract_uds:
     input:
         "data/hiseq4000/{uds_run}/{sample_name}.fastq.gz"
+    conda:
+        "envs/shogun.yaml"
     output:
         temp("/dev/shm/uds/{uds_run}.{sample_name}/{sample_name}.fastq")
     shell:
@@ -25,6 +31,8 @@ rule extract_uds:
 rule quality_control_uds:
     input:
         "/dev/shm/uds/{uds_run}.{sample_name}/{sample_name}.fastq"
+    conda:
+        "envs/shogun.yaml"
     params:
         "/dev/shm/uds/{uds_run}.{sample_name}"
     priority: 1
