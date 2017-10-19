@@ -7,14 +7,14 @@ min_version("3.11.2")
 
 configfile: "config.yaml"
 
-shogun_db_directories, shogun_db_files = glob_wildcards("data/references/{database}/{file}", database=config['database'])
+shogun_db_files = glob_wildcards("data/references/{database}/".format(database=config['database']) + "{files}")
 
 uds_runs, sample_names = glob_wildcards("data/hiseq4000/{uds_run}/{sample_name}.fastq.gz")
 
 rule all:
     input:
         expand("figs/fig{f}.pdf", f=[1,]),
-        expand("results/uds/{uds_run}.{sample_name}.txt", uds_run=uds_runs)
+        expand("results/uds/{uds_run}.{sample_name}.txt", uds_run=uds_runs, sample_name=sample_names)
 
 ############# Analysis ##############
 
@@ -53,8 +53,15 @@ rule place_on_ramdisk:
 
 rule shogun_filter:
     input:
-        pass
-    priority: 3
+        expand("/dev/shm/{dir}/{file}", zip, dir=shogun_db_directories, file=shogun_db_files),
+        queries = "/dev/shm/uds/{uds_run}.{sample_name}/combined_seqs.fna"
+    benchmark:
+        "results/benchmarks/{sample_name}.shogun.log"
+    priority: 4
+    output:
+        temp("/dev/shm/uds/{uds_run}.{sample_name}.txt")
+    shell:
+        "shogun align --input {params} "
 
 rule shogun_align:
     input:
@@ -70,7 +77,15 @@ rule shogun_align:
 
 rule shogun_function:
     input:
-        pass
+        expand("/dev/shm/{dir}/{file}", zip, dir=shogun_db_directories, file=shogun_db_files),
+        queries = "/dev/shm/uds/{uds_run}.{sample_name}/combined_seqs.fna"
+    benchmark:
+        "results/benchmarks/{sample_name}.shogun.log"
+    priority: 4
+    output:
+        temp("/dev/shm/uds/{uds_run}.{sample_name}.txt")
+    shell:
+        "shogun align --input {params} "
 
 
 
