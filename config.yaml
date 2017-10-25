@@ -1,2 +1,3 @@
-database: "/home/knightsd/hillm096/globus/SHOGUN/rep82"
+database: "/home/knightsd/hillm096/globus/SHOGUN"
 database_name: "rep82"
+database_genes_name: "rep82_genes"

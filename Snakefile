@@ -3,78 +3,216 @@ __license__ = "AGPL"
 
 from glob import glob
 from snakemake.utils import min_version
+import multiprocessing
+import re
+import os
+
+threads_max = multiprocessing.cpu_count()
 
 min_version("3.11.2")
 
 configfile: "config.yaml"
 
-#shogun_db_files = glob(config['database'] + "/**/*.*", recursive=True)
-shogun_db_dirs, shogun_db_files = glob_wildcards(config['database'] + "/{dir}/{file}")
+shogun_db_files = glob("{database}/{name}/**/*.*".format(database=config['database'], name=config['database_name']), recursive=True)
+shogun_db_files = [file.replace(config['database'] + "/", '') for file in shogun_db_files]
+shogun_genes_db_files = glob("{database}/{name}/**/*.*".format(database=config['database'], name=config['database_genes_name']), recursive=True)
+shogun_genes_db_files = [file.replace(config['database'] + "/", '') for file in shogun_genes_db_files]
+#shogun_db_dirs, shogun_db_files = glob_wildcards(config['database'] + "/{dir}/{file}")
+#import ipdb; ipdb.set_trace()
 
+uds_names = ['160729_K00180_0226_AH7WCCBBXX', '160729_K00180_0227_BHCT3LBBXX']
 uds_runs, sample_names = glob_wildcards("data/hiseq4000/{uds_run}/{sample_name}.fastq.gz")
+
+# Filter for all reads
+#uds_runs, sample_names = zip(*((uds_run, sample_name) for uds_run, sample_name in zip(uds_runs, sample_names) if not sample_name.startswith("Undetermined") and uds_names[0] == uds_run))
+uds_runs, sample_names = zip(*((uds_run, sample_name) for uds_run, sample_name in zip(uds_runs, sample_names) if not sample_name.startswith("Undetermined")))
+
+def format_sample_name(sample_name):
+    return re.sub(r"_R[1-2]", "", sample_name).replace("_", ".")
 
 rule all:
     input:
         #expand("figs/fig{f}.pdf", f=[1,]),
-        expand("results/uds/{uds_run}.{sample_name}/alignment.burst.b6", zip, uds_run=uds_runs, sample_name=sample_names)
+        #expand("results/hiseq4000/{uds_run}/{sample_name_qc}/taxatable.burst.strain.txt", zip, uds_run=uds_runs, sample_name_qc=set(map(format_sample_name, sample_names)))
+        expand("results/hiseq4000/{uds_run}/combined/taxatable.burst.strain.txt", uds_run=set(uds_runs))
+        #expand("results/hiseq4000/{uds_run}/{sample_name}.fastq", zip, uds_run=uds_runs, sample_name=sample_names)
 
-############# Analysis ##############
+
+
+rule sample0_genes:
+    input:
+        expand("results/hiseq4000/{uds_run}/combined/taxatable.genes.kegg.txt", uds_run=uds_names[0])
+
+rule sample1_genes:
+    input:
+        expand("results/hiseq4000/{uds_run}/combined/taxatable.genes.kegg.txt", uds_run=uds_names[1])
+
+rule sample0_genomes:
+    input:
+        expand("results/hiseq4000/{uds_run}/combined/taxatable.burst.strain.kegg.txt", uds_run=uds_names[0])
+
+rule sample1_genomes:
+    input:
+        "results/hiseq4000/{uds_run}/combined/taxatable.burst.strain.kegg.txt".format(uds_run=uds_names[1]),
+        #"results/hiseq4000/{uds_run}/combined/confidence.genomes.txt".format(uds_run=uds_names[1])
+
+def debug(wildcards):
+    import ipdb; ipdb.set_trace()
+    return ""
+
+
+############# Genomes ##############
 
 rule extract_uds:
     input:
+        # debug
         "data/hiseq4000/{uds_run}/{sample_name}.fastq.gz"
-    conda:
-        "envs/shogun.yaml"
     output:
-        temp("/dev/shm/uds/{uds_run}.{sample_name}/{sample_name}.fastq")
+        "results/hiseq4000/{uds_run}/{sample_name}.fastq"
     shell:
         "7z x {input} -so > {output}"
 
 rule quality_control_uds:
     input:
-        "/dev/shm/uds/{uds_run}.{sample_name}/{sample_name}.fastq"
-    conda:
-        "envs/shogun.yaml"
-    params:
-        "/dev/shm/uds/{uds_run}.{sample_name}"
-    priority: 1
+        lambda wildcards: glob("results/hiseq4000/{uds_run}".format(uds_run=wildcards.uds_run) + "/*.fastq")
     output:
-        temp("/dev/shm/uds/{uds_run}.{sample_name}/combined_seqs.fna"),
-        temp("/dev/shm/uds/{uds_run}.{sample_name}/shi7.log"),
+        "results/hiseq4000/{uds_run}/combined_seqs.fna",
+        "results/hiseq4000/{uds_run}/shi7.log"
+    params:
+        os.path.abspath("results/hiseq4000") + "/{uds_run}"
+    priority: 1
+    threads:
+        int(threads_max/2)
     shell:
-        "shi7 -SE --combine_fasta True -i {params} -o {params} --adaptor Nextera -trim_q 32 -filter_q 36 --strip_underscore True -t 24"
+        "shi7 --input {params} --output {params} --adaptor Nextera --combine_fasta True --trim_qual 34 --filter_qual 36 --threads {threads} --allow_outies False --flash True"
+
+rule split_quality_control:
+    input:
+        "results/hiseq4000/{uds_run}/combined_seqs.fna"
+    output:
+        expand("results/hiseq4000/{{uds_run}}/x{n}", n=range(9))
+    shell:
+        "split -a 1 -d -l 200000000 {input}"
 
 rule shogun_place_on_ramdisk:
     input:
-        config['database'] + "/{dir}/{file}"
+        config['database'] + "/{file}"
     priority:
         2
     output:
-        temp("/dev/shm/{database_name}".format(database_name=config['database_name']) + "/{dir}/{file}")
+        temp("/dev/shm/{file}")
     shell:
         "cp {input} {output}"
 
 rule shogun_align:
     input:
-        expand("/dev/shm/{database_name}/".format(database_name=config['database_name']) + "{dir}/{file}", zip, dir=shogun_db_dirs, file=shogun_db_files),
-        queries = "/dev/shm/uds/{uds_run}.{sample_name}/combined_seqs.fna"
-    conda:
-        "envs/shogun.yaml"
+        expand("/dev/shm/{file}", file=shogun_db_files),
+        qc_log="results/hiseq4000/{uds_run}/shi7.log",
+        queries="results/hiseq4000/{uds_run}/x{n}"
     output:
-        "results/uds/{uds_run}.{sample_name}/alignment.burst.b6",
+        "results/hiseq4000/{uds_run}/alignment_{n}/alignment.burst.b6",
     params:
         database="/dev/shm/{database_name}".format(database_name=config['database_name']),
-        output="results/uds/{uds_run}.{sample_name}"
+        output="results/hiseq4000/{uds_run}/alignment_{n}",
     benchmark:
-        "results/benchmarks/{sample_name}.shogun.filter.log"
+        "results/benchmarks/alignment_{n}/shogun.align.log"
     priority:
         3
-    output:
-        temp("/dev/shm/uds/{uds_run}.{sample_name}.txt")
+    threads:
+        int(threads_max)
     shell:
-        "shogun aligner --input {input.queries} --database {params.database} --aligner burst --function --capitalist --level strain --threads 32 --output {params.output}"
+        "shogun align --input {input.queries} --database {params.database} --aligner burst --threads {threads} --output {params.output}"
 
-################# Plots #################
+rule combine_alignments:
+    input:
+        lambda wildcards: expand("results/hiseq4000/{uds_run}/alignment_{n}/alignment.burst.b6", n=range(9), uds_run=wildcards.uds_run)
+    output:
+        "results/hiseq4000/{uds_run}/combined/alignment.burst.b6"
+    shell:
+        "cat {input} > {output}"
+
+rule shogun_assign_taxonomy:
+    input:
+        expand("/dev/shm/{file}", file=shogun_db_files),
+        alignment = "results/hiseq4000/{uds_run}/combined/alignment.burst.b6"
+    output:
+        "results/hiseq4000/{uds_run}/combined/taxatable.burst.strain.txt",
+    params:
+        database="/dev/shm/{database_name}".format(database_name=config['database_name'])
+    benchmark:
+        "results/benchmarks/{uds_run}/shogun.filter.log"
+    priority:
+        4
+    shell:
+        "shogun assign_taxonomy --input {input.alignment} --database {params.database} --output {output}"
+
+rule shogun_functions:
+    input:
+        expand("/dev/shm/{file}", file=shogun_db_files),
+        taxatable = "results/hiseq4000/{uds_run}/{sample_name_qc}/taxatable.burst.strain.txt"
+    output:
+        "results/hiseq4000/{uds_run}/{sample_name_qc}/taxatable.burst.strain.kegg.txt",
+        "results/hiseq4000/{uds_run}/{sample_name_qc}/taxatable.burst.strain.normalized.txt",
+        "results/hiseq4000/{uds_run}/{sample_name_qc}/taxatable.burst.strain.kegg.modules.txt",
+        "results/hiseq4000/{uds_run}/{sample_name_qc}/taxatable.burst.strain.kegg.modules.coverage.txt"
+    params:
+        database="/dev/shm/{database_name}".format(database_name=config['database_name']),
+        output="results/hiseq4000/{uds_run}/{sample_name_qc}"
+    benchmark:
+        "results/benchmarks/{sample_name_qc}/shogun.functional.log"
+    shell:
+        "shogun functional --input {input.taxatable} --database {params.database} --level strain --output {params.output}"
+
+rule shogun_coverage:
+    input:
+        expand("/dev/shm/{file}", file=shogun_db_files),
+        alignment = "results/hiseq4000/{uds_run}/combined/alignment.burst.b6"
+    output:
+        "results/hiseq4000/{uds_run}/{sample_name_qc}/confidence.genomes.txt"
+    params:
+        database="/dev/shm/{database_name}".format(database_name=config['database_name']),
+    benchmark:
+        "results/benchmarks/{sample_name_qc}/shogun.cover.log"
+    shell:
+        "shogun coverage --input {input.alignment} --database {params.database} --level strain --output {output}"
+
+################# Genes #################
+rule shogun_genes_align:
+    input:
+        expand("/dev/shm/{file}", file=shogun_genes_db_files),
+        qc_log="results/hiseq4000/{uds_run}/shi7.log",
+        queries="results/hiseq4000/{uds_run}/x{n}"
+    output:
+        "results/hiseq4000/{uds_run}/genes_alignment_{n}/alignment.burst.b6",
+    params:
+        database="/dev/shm/{database_name}".format(database_name=config['database_genes_name']),
+        output="results/hiseq4000/{uds_run}/genes_alignment_{n}",
+    benchmark:
+        "results/benchmarks/genes_alignment_{n}/shogun.align.log"
+    priority:
+        3
+    threads:
+        int(threads_max)
+    shell:
+        "shogun align --input {input.queries} --database {params.database} --aligner burst --threads {threads} --output {params.output}"
+
+rule combine_genes_alignments:
+    input:
+        lambda wildcards: expand("results/hiseq4000/{uds_run}/genes_alignment_{n}/alignment.burst.b6", n=range(9), uds_run=wildcards.uds_run)
+    output:
+        "results/hiseq4000/{uds_run}/combined/genes.alignment.burst.b6"
+    shell:
+        "cat {input} > {output}"
+
+rule map_alignment2kos:
+    input:
+        alignment="results/hiseq4000/{uds_run}/combined/genes.alignment.burst.b6",
+        locus2ko="data/prokka_rep82/rep82_locus2KO.txt"
+    output:
+        "results/hiseq4000/{uds_run}/combined/taxatable.genes.kegg.txt"
+    script:
+        "scripts/locus2ko.py"
+
 
 ########### Tables ##############
 
