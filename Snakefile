@@ -49,11 +49,14 @@ rule sample1_genes:
 
 rule sample0_genomes:
     input:
-        expand("results/hiseq4000/{uds_run}/combined/taxatable.burst.strain.kegg.txt", uds_run=uds_names[0])
+        "results/hiseq4000/{uds_run}/combined/taxatable.burst.strain.kegg.txt".format(uds_run=uds_names[0]),
+        "results/hiseq4000/{uds_run}/flat/taxatable.burst.strain.kegg.txt".format(uds_run=uds_names[0])
+
 
 rule sample1_genomes:
     input:
         "results/hiseq4000/{uds_run}/combined/taxatable.burst.strain.kegg.txt".format(uds_run=uds_names[1]),
+        "results/hiseq4000/{uds_run}/flat/taxatable.burst.strain.kegg.txt".format(uds_run=uds_names[1])
         #"results/hiseq4000/{uds_run}/combined/confidence.genomes.txt".format(uds_run=uds_names[1])
 
 def debug(wildcards):
@@ -76,8 +79,8 @@ rule quality_control_uds:
     input:
         lambda wildcards: glob("results/hiseq4000/{uds_run}".format(uds_run=wildcards.uds_run) + "/*.fastq")
     output:
-        "results/hiseq4000/{uds_run}/combined_seqs.fna",
-        "results/hiseq4000/{uds_run}/shi7.log"
+        "results/hiseq4000/{uds_run}/quality_control/combined_seqs.fna",
+        "results/hiseq4000/{uds_run}/quality_control/shi7.log"
     params:
         os.path.abspath("results/hiseq4000") + "/{uds_run}"
     priority: 1
@@ -88,9 +91,9 @@ rule quality_control_uds:
 
 rule split_quality_control:
     input:
-        "results/hiseq4000/{uds_run}/combined_seqs.fna"
+        "results/hiseq4000/{uds_run}/quality_control/combined_seqs.fna"
     output:
-        expand("results/hiseq4000/{{uds_run}}/x{n}", n=range(9))
+        expand("results/hiseq4000/{{uds_run}}/quality_control/x{n}", n=range(10))
     shell:
         "split -a 1 -d -l 200000000 {input}"
 
@@ -104,11 +107,31 @@ rule shogun_place_on_ramdisk:
     shell:
         "cp {input} {output}"
 
+rule shogun_filter_contaminates:
+    input:
+        expand("/dev/shm/{file}", file=shogun_db_files),
+        queries="results/hiseq4000/{uds_run}/quality_control/x{n}"
+    output:
+        "results/hiseq4000/{uds_run}/filtered_{n}/combined_seqs.fna",
+        "results/hiseq4000/{uds_run}/filtered_{n}/combined_seqs.filtered.fna",
+        "results/hiseq4000/{uds_run}/filtered_{n}/alignment.burst.best.b6",
+    params:
+        database="/dev/shm/{database_name}".format(database_name=config['database_name']),
+        output="results/hiseq4000/{uds_run}/filtered_{n}",
+    benchmark:
+        "results/benchmarks/filtered_{n}/shogun.filtered.log"
+    priority:
+        3
+    threads:
+        int(threads_max)
+    shell:
+        "shogun filter --input {input.queries} --database {params.database} --threads {threads} --output {params.output}"  
+
 rule shogun_align:
     input:
         expand("/dev/shm/{file}", file=shogun_db_files),
         qc_log="results/hiseq4000/{uds_run}/shi7.log",
-        queries="results/hiseq4000/{uds_run}/x{n}"
+        queries="results/hiseq4000/{uds_run}/filtered_{n}/combined_seqs.fna"
     output:
         "results/hiseq4000/{uds_run}/alignment_{n}/alignment.burst.b6",
     params:
@@ -125,7 +148,7 @@ rule shogun_align:
 
 rule combine_alignments:
     input:
-        lambda wildcards: expand("results/hiseq4000/{uds_run}/alignment_{n}/alignment.burst.b6", n=range(9), uds_run=wildcards.uds_run)
+        lambda wildcards: expand("results/hiseq4000/{uds_run}/alignment_{n}/alignment.burst.b6", n=range(10), uds_run=wildcards.uds_run)
     output:
         "results/hiseq4000/{uds_run}/combined/alignment.burst.b6"
     shell:
@@ -149,17 +172,17 @@ rule shogun_assign_taxonomy:
 rule shogun_functions:
     input:
         expand("/dev/shm/{file}", file=shogun_db_files),
-        taxatable = "results/hiseq4000/{uds_run}/{sample_name_qc}/taxatable.burst.strain.txt"
+        taxatable = "results/hiseq4000/{uds_run}/{style}/taxatable.burst.strain.txt"
     output:
-        "results/hiseq4000/{uds_run}/{sample_name_qc}/taxatable.burst.strain.kegg.txt",
-        "results/hiseq4000/{uds_run}/{sample_name_qc}/taxatable.burst.strain.normalized.txt",
-        "results/hiseq4000/{uds_run}/{sample_name_qc}/taxatable.burst.strain.kegg.modules.txt",
-        "results/hiseq4000/{uds_run}/{sample_name_qc}/taxatable.burst.strain.kegg.modules.coverage.txt"
+        "results/hiseq4000/{uds_run}/{style}/taxatable.burst.strain.kegg.txt",
+        "results/hiseq4000/{uds_run}/{style}/taxatable.burst.strain.normalized.txt",
+        "results/hiseq4000/{uds_run}/{style}/taxatable.burst.strain.kegg.modules.txt",
+        "results/hiseq4000/{uds_run}/{style}/taxatable.burst.strain.kegg.modules.coverage.txt"
     params:
         database="/dev/shm/{database_name}".format(database_name=config['database_name']),
-        output="results/hiseq4000/{uds_run}/{sample_name_qc}"
+        output="results/hiseq4000/{uds_run}/{style}"
     benchmark:
-        "results/benchmarks/{sample_name_qc}/shogun.functional.log"
+        "results/benchmarks/{style}/shogun.functional.log"
     shell:
         "shogun functional --input {input.taxatable} --database {params.database} --level strain --output {params.output}"
 
@@ -176,17 +199,28 @@ rule shogun_coverage:
     shell:
         "shogun coverage --input {input.alignment} --database {params.database} --level strain --output {output}"
 
+rule shogun_assign_taxonomy_flat:
+    input:
+        alignment = "results/hiseq4000/{uds_run}/combined/alignment.burst.b6"
+    output:
+        "results/hiseq4000/{uds_run}/flat/taxatable.burst.strain.txt",
+    benchmark:
+        "results/benchmarks/{uds_run}/shogun.flat.log"
+    script:
+        "scripts/locus2strain.py" 
+
 ################# Genes #################
 rule shogun_genes_align:
     input:
         expand("/dev/shm/{file}", file=shogun_genes_db_files),
         qc_log="results/hiseq4000/{uds_run}/shi7.log",
-        queries="results/hiseq4000/{uds_run}/x{n}"
+        queries="results/hiseq4000/{uds_run}/filtered_{n}/combined_seqs.fna"
     output:
-        "results/hiseq4000/{uds_run}/genes_alignment_{n}/alignment.burst.b6",
+        alignment="results/hiseq4000/{uds_run}/genes_alignment_{n}/alignment.burst.b6",
+        logfile="results/hiseq4000/{uds_run}/genes_alignment_{n}/shogun.log.txt"
     params:
         database="/dev/shm/{database_name}".format(database_name=config['database_genes_name']),
-        output="results/hiseq4000/{uds_run}/genes_alignment_{n}",
+        output="results/hiseq4000/{uds_run}/genes_alignment_{n}"
     benchmark:
         "results/benchmarks/genes_alignment_{n}/shogun.align.log"
     priority:
@@ -194,7 +228,7 @@ rule shogun_genes_align:
     threads:
         int(threads_max)
     shell:
-        "shogun align --input {input.queries} --database {params.database} --aligner burst --threads {threads} --output {params.output}"
+        "shogun --log debug align --input {input.queries} --database {params.database} --aligner burst --threads {threads} --output {params.output} &> {output.logfile}"
 
 rule combine_genes_alignments:
     input:
@@ -206,8 +240,7 @@ rule combine_genes_alignments:
 
 rule map_alignment2kos:
     input:
-        alignment="results/hiseq4000/{uds_run}/combined/genes.alignment.burst.b6",
-        locus2ko="data/prokka_rep82/rep82_locus2KO.txt"
+        alignment="results/hiseq4000/{uds_run}/combined/genes.alignment.burst.b6"
     output:
         "results/hiseq4000/{uds_run}/combined/taxatable.genes.kegg.txt"
     script:
